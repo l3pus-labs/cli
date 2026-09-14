@@ -175,6 +175,25 @@ Teil der Angabe und keine Ziffer zu viel.
 
 ---
 
+## PDF, XML und Fotos
+
+Ein Dutzend Wege in Rakete antwortet nicht mit JSON, sondern mit einem
+PDF, einer E-Rechnung, einem SVG oder einem Foto. Die Bytes gehen
+unverändert durch:
+
+```bash
+rakete documents document-pdf 42 -o rechnung.pdf
+rakete documents document-pdf 42 > rechnung.pdf          # dasselbe
+rakete documents document-einvoice 42 | xmllint --format -
+```
+
+**In ein Terminal schreibt es sie nicht.** Ein PDF auf den Bildschirm
+macht ihn unbrauchbar, und die ersten Bytes eines PDF sind lesbar genug,
+dass man es erst merkt, wenn es zu spät ist. Ohne Umleitung und ohne
+`-o` sagt das Werkzeug stattdessen, was es hat und wie groß es ist.
+
+---
+
 ## Woraus es besteht
 
 | Ordner | Was |

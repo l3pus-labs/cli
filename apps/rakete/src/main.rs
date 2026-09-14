@@ -387,13 +387,31 @@ fn dispatch(
     let client = Client::new(&server, token)?;
     let response = client.call(&operation.method, &path, &query, body.as_ref())?;
 
+    let ziel = sub
+        .get_one::<String>("output")
+        .or_else(|| matches.get_one::<String>("output"));
+
     match l3pus_cli::exit::from_status(response.status) {
         Code::Ok => {
+            // **Kein JSON heißt: Bytes durchreichen, nicht deuten.** Ein
+            // PDF als Text auf den Bildschirm zu schreiben macht ein
+            // Terminal unbrauchbar, und die ersten Bytes eines PDF sind
+            // lesbar genug, dass man es erst merkt, wenn es zu spät ist.
+            if !response.is_json() && !response.bytes.is_empty() {
+                return write_bytes(&response.bytes, ziel, &response.content_type, format);
+            }
             // 204 hat keinen Rumpf, und „null" auf dem Bildschirm sieht
             // aus wie ein Fehler.
             if response.body.is_null() {
                 output::note(format, "Erledigt.");
                 output::emit(format, &serde_json::json!({"ok": true}));
+            } else if let Some(pfad) = ziel {
+                std::fs::write(
+                    pfad,
+                    serde_json::to_vec_pretty(&response.body).unwrap_or_default(),
+                )
+                .map_err(|error| Failure::unreachable(format!("{pfad}: {error}")))?;
+                output::note(format, &format!("Geschrieben nach {pfad}."));
             } else {
                 output::emit(format, &response.body);
             }
@@ -404,6 +422,51 @@ fn dispatch(
             message: l3pus_cli::api::complain(response.status, &response.body),
         }),
     }
+}
+
+/// Bytes, die kein JSON sind: ein PDF, eine XML-Rechnung, ein Foto.
+///
+/// Nach stdout, wenn kein Ziel genannt ist, damit `> datei.pdf` und eine
+/// Pipe funktionieren wie überall. **Aber nicht in ein Terminal**: dort
+/// macht ein PDF den Bildschirm kaputt, und der Hinweis dazu ist
+/// nützlicher als der Unrat.
+fn write_bytes(
+    bytes: &[u8],
+    ziel: Option<&String>,
+    content_type: &str,
+    format: Format,
+) -> Outcome<()> {
+    use std::io::{IsTerminal, Write};
+
+    if let Some(pfad) = ziel {
+        std::fs::write(pfad, bytes)
+            .map_err(|error| Failure::unreachable(format!("{pfad}: {error}")))?;
+        output::note(
+            format,
+            &format!("{} Bytes nach {pfad} geschrieben.", bytes.len()),
+        );
+        return Ok(());
+    }
+
+    let stdout = std::io::stdout();
+    if stdout.is_terminal() {
+        return Err(Failure::usage(format!(
+            "Die Antwort ist {}, {} Bytes, und kein Text. \
+             Mit -o datei schreiben oder umleiten.",
+            if content_type.is_empty() {
+                "binär"
+            } else {
+                content_type.split(';').next().unwrap_or(content_type)
+            },
+            bytes.len()
+        )));
+    }
+
+    let mut out = stdout.lock();
+    out.write_all(bytes)
+        .map_err(|error| Failure::unreachable(format!("stdout: {error}")))?;
+    let _ = out.flush();
+    Ok(())
 }
 
 /// Den Rumpf zusammensetzen: aus `--data`, aus `--field`, oder beides.

@@ -39,6 +39,20 @@ pub fn build(catalog: Option<&Catalog>) -> Command {
                 .global(true)
                 .action(ArgAction::SetTrue)
                 .help("Antwort als JSON, ohne Begleittext"),
+        )
+        // **Ein Dutzend Wege antwortet mit einem PDF und nicht mit
+        // JSON.** Ohne Ziel gehen die Bytes nach stdout, und das ist
+        // richtig: `rakete documents document-pdf 12 > rechnung.pdf`
+        // ist der Weg, den eine Shell ohnehin kennt. Der Schalter ist
+        // für den Fall, dass jemand nebenher noch lesen will, was
+        // passiert ist.
+        .arg(
+            Arg::new("output")
+                .long("output")
+                .short('o')
+                .global(true)
+                .value_name("DATEI")
+                .help("Antwort in eine Datei schreiben statt nach stdout"),
         );
 
     root = root.subcommands(builtins());

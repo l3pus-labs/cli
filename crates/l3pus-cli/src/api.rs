@@ -19,6 +19,27 @@ pub struct Client {
 pub struct Response {
     pub status: u16,
     pub body: serde_json::Value,
+    /// Die Bytes, wie sie kamen.
+    ///
+    /// **Ein Dutzend Wege in Rakete antwortet nicht mit JSON**, sondern
+    /// mit einem PDF, einer XML-Rechnung, einem SVG oder einem Foto. Ohne
+    /// diese Bytes hätte das Werkzeug versucht, ein PDF als Text zu
+    /// deuten, und der Bildschirm wäre voll Unrat gewesen.
+    pub bytes: Vec<u8>,
+    /// Woran man erkennt, ob das JSON ist. Leer, wenn der Server nichts
+    /// gesagt hat.
+    pub content_type: String,
+}
+
+impl Response {
+    /// Ob die Antwort JSON ist, und damit, ob `body` etwas taugt.
+    ///
+    /// Am Kopf des Servers und nicht daran, ob sich der Inhalt zufällig
+    /// lesen lässt: die ersten Bytes eines PDF sind gültiger Text, und
+    /// ein leeres JSON-Objekt sieht aus wie eine leere Datei.
+    pub fn is_json(&self) -> bool {
+        self.content_type.is_empty() || self.content_type.contains("json")
+    }
 }
 
 impl Client {
@@ -67,14 +88,29 @@ impl Client {
             Failure::unreachable(format!("{url} war nicht erreichbar: {error}"))
         })?;
         let status = response.status().as_u16();
-        let text = response.text().unwrap_or_default();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = response.bytes().map(|b| b.to_vec()).unwrap_or_default();
         // Ein leerer Rumpf ist gültig: 204 hat keinen.
-        let body = if text.trim().is_empty() {
+        let body = if bytes.is_empty() {
             serde_json::Value::Null
         } else {
-            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+            match std::str::from_utf8(&bytes) {
+                Ok(text) if !text.trim().is_empty() => serde_json::from_str(text)
+                    .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
+                _ => serde_json::Value::Null,
+            }
         };
-        Ok(Response { status, body })
+        Ok(Response {
+            status,
+            body,
+            bytes,
+            content_type,
+        })
     }
 
     /// Ein Aufruf, dessen Antwort nur im Erfolgsfall etwas taugt.
@@ -138,6 +174,40 @@ mod tests {
         // Ein nackter Statuscode ist als Auskunft wertlos.
         let text = complain(401, &json!(null));
         assert!(text.contains("rakete login"), "{text}");
+    }
+
+    fn antwort(content_type: &str) -> Response {
+        Response {
+            status: 200,
+            body: serde_json::Value::Null,
+            bytes: Vec::new(),
+            content_type: content_type.into(),
+        }
+    }
+
+    #[test]
+    fn a_pdf_is_not_json() {
+        // Der Fall, für den es die Unterscheidung gibt: die ersten Bytes
+        // eines PDF sind lesbarer Text, und ohne den Kopf hielte man sie
+        // für eine Antwort.
+        assert!(!antwort("application/pdf").is_json());
+        assert!(!antwort("image/jpeg").is_json());
+        assert!(!antwort("application/xml").is_json());
+        assert!(!antwort("text/csv; charset=windows-1252").is_json());
+    }
+
+    #[test]
+    fn json_in_all_its_spellings_is_json() {
+        assert!(antwort("application/json").is_json());
+        assert!(antwort("application/json; charset=utf-8").is_json());
+        assert!(antwort("application/problem+json").is_json());
+    }
+
+    #[test]
+    fn a_server_that_says_nothing_is_taken_for_json() {
+        // Ohne Kopf ist JSON die richtige Annahme: alles andere in
+        // Rakete sagt ausdrücklich, was es ist.
+        assert!(antwort("").is_json());
     }
 
     #[test]
