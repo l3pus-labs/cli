@@ -1,0 +1,23 @@
+[package]
+name = "rakete-cli"
+description = "Rakete von der Kommandozeile, für Menschen und für Agenten"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rakete"
+path = "src/main.rs"
+
+[dependencies]
+l3pus-cli = { path = "../../crates/l3pus-cli" }
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+rpassword.workspace = true
+serde.workspace = true
+serde_json.workspace = true

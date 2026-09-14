@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/l3pus-cli", "apps/rakete"]
+
+# **Ein Arbeitsbereich für mehrere Programme, und das ist der Grund für
+# dieses Repository.** Rakete bekommt hier sein `rakete`, und wenn Vybe
+# oder das nächste Produkt eines braucht, kommt es daneben. Anmeldung,
+# Konfiguration, Ausgabeform und Rückgabewerte sind für alle dieselben;
+# drei Repositories mit drei Fassungen derselben Anmeldung wären drei
+# Gelegenheiten, es unterschiedlich zu machen.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/l3pus-labs/cli"
+authors = ["l3pus <dennis.ollhoff@l3pus.de>"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "string", "wrap_help"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+directories = "6"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+rpassword = "7"
+terminal_size = "0.4"
+serde = { version = "1", features = ["derive"] }
+# preserve_order, damit die Felder in der Reihenfolge stehen, in der
+# der Server sie geschrieben hat: dort kommt id zuerst und der
+# Zeitstempel zuletzt, weil ein Mensch das so aufgeschrieben hat.
+# Alphabetisch sortiert sieht jede Tabelle aus wie ein Datenbankauszug.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+# Ein Werkzeug, das über GitHub verteilt wird, soll klein sein: jeder
+# Abruf lädt es ganz.
+strip = true
+lto = "thin"
+codegen-units = 1
