@@ -78,6 +78,7 @@ fn run(arguments: &[String], server: Option<String>, format: Format) -> Outcome<
     // RAKETE_TOKEN setzen muss und nie `login` aufruft: der erste Befehl
     // bringt sich seine Befehle selbst mit.
     let mut unreachable: Option<Failure> = None;
+    let server_unbekannt = server.is_none();
     let catalog = match server.as_deref() {
         Some(address) => match cached_spec(address)
             .ok()
@@ -116,14 +117,21 @@ fn run(arguments: &[String], server: Option<String>, format: Format) -> Outcome<
             // eine Kette, die den Server nicht erreicht, den Wert 2 und
             // damit die Auskunft „du hast dich vertippt", obwohl die
             // Frage offen ist.
-            if let Some(failure) = unreachable.take()
-                && matches!(
-                    error.kind(),
-                    clap::error::ErrorKind::InvalidSubcommand
-                        | clap::error::ErrorKind::UnknownArgument
-                )
-            {
-                return failure;
+            let unbekannter_befehl = matches!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidSubcommand | clap::error::ErrorKind::UnknownArgument
+            );
+            if unbekannter_befehl {
+                if let Some(failure) = unreachable.take() {
+                    return failure;
+                }
+                // **Ohne Server gibt es nur die eingebauten Befehle**,
+                // und clap nennt jeden anderen einen Tippfehler. Das ist
+                // die falsche Auskunft: der Befehl mag es geben, wir
+                // wissen nur nicht, wo wir fragen sollen.
+                if server_unbekannt {
+                    return no_server();
+                }
             }
             Failure::usage(error.to_string())
         })?;
