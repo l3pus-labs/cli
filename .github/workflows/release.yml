@@ -1,0 +1,118 @@
+name: Veröffentlichung
+
+# Fertige Dateien für die drei Systeme, angehängt an eine
+# Veröffentlichung.
+#
+# **Dieses Repository ist öffentlich, und das macht den Unterschied.**
+# Bei einem privaten antwortet GitHub auf die Download-Adresse einer
+# Datei mit 404, auch mit gültigem Zeichen, und nur der Weg über die
+# Schnittstelle mit der Kennung des Anhangs funktioniert; die clikd-CLI
+# musste sich deshalb ihren eigenen Installationsweg bauen. Hier reicht
+# die Adresse, die in der Veröffentlichung steht.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      fassung:
+        description: "Fassung, etwa 0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bauen:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            ziel: aarch64-apple-darwin
+            name: macOS (Apple Silicon)
+          - os: macos-latest
+            ziel: x86_64-apple-darwin
+            name: macOS (Intel)
+          - os: ubuntu-latest
+            ziel: x86_64-unknown-linux-gnu
+            name: Linux
+          - os: windows-latest
+            ziel: x86_64-pc-windows-msvc
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # **`shell: bash` ist hier kein Geschmack.** Ohne die Zeile nimmt
+      # der Windows-Läufer PowerShell, und ein Zuschnitt wie
+      # `${ETIKETT#v}` ist dort ein Syntaxfehler statt einer Zuweisung.
+      # Genau daran ist am 14.09.2026 der erste Veröffentlichungslauf
+      # von Rakete gescheitert, und zwar nur auf Windows.
+      - name: Etikett und Fassung stimmen überein
+        shell: bash
+        run: |
+          ETIKETT="${{ github.event.inputs.fassung && format('v{0}', github.event.inputs.fassung) || github.ref_name }}"
+          ETIKETT="${ETIKETT#v}"
+          KONFIG=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$ETIKETT" != "$KONFIG" ]; then
+            echo "Das Etikett sagt $ETIKETT, Cargo.toml sagt $KONFIG."
+            exit 1
+          fi
+          echo "Beide sagen $KONFIG"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.ziel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.ziel }}
+
+      - name: Systembibliotheken (nur Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Bauen
+        run: cargo build --release --target ${{ matrix.ziel }} -p rakete-cli
+
+      # Ein Archivformat für alle vier, damit der Auspacker auf jeder
+      # Seite derselbe sein kann.
+      - name: Einpacken
+        shell: bash
+        run: |
+          NAME="rakete-${{ matrix.ziel }}"
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.ziel }}/release/rakete.exe" "dist/"
+          else
+            cp "target/${{ matrix.ziel }}/release/rakete" "dist/"
+          fi
+          cp README.md LICENSE dist/
+          tar -czf "$NAME.tar.gz" -C dist .
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256" 2>/dev/null \
+            || sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.fassung && format('v{0}', github.event.inputs.fassung) || github.ref_name }}
+          files: |
+            rakete-${{ matrix.ziel }}.tar.gz
+            rakete-${{ matrix.ziel }}.tar.gz.sha256
+          body: |
+            `rakete` für ${{ matrix.name }} und die übrigen Systeme.
+
+            Auspacken, irgendwohin in den PATH legen, dann:
+
+            ```
+            rakete login --server https://rakete-app.l3p.us
+            ```
+
+            Für ein Programm oder eine KI: ein Zeichen in Rakete anlegen
+            (Einstellungen, Zugang) und `RAKETE_SERVER` und
+            `RAKETE_TOKEN` setzen. `rakete describe` sagt dann alles
+            Weitere.
