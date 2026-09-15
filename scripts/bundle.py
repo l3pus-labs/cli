@@ -52,6 +52,10 @@ def main() -> int:
         shutil.copy2(binaer, bau / "server" / "rakete")
         shutil.copy2(WURZEL / "plugins" / "rakete" / "README.md", bau / "README.md")
         shutil.copy2(WURZEL / "LICENSE", bau / "LICENSE")
+        # Das Zeichen des Betriebs. Ohne es steht in der Liste der
+        # Erweiterungen ein grauer Platzhalter, und ein Platzhalter neben
+        # elf Erweiterungen mit Zeichen sieht aus wie etwas Unfertiges.
+        shutil.copytree(WURZEL / "bundle" / "assets", bau / "assets")
 
         ziel.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(ziel, "w", zipfile.ZIP_DEFLATED) as archiv:

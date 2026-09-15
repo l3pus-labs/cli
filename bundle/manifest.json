@@ -13,13 +13,35 @@
   "homepage": "https://rakete.l3p.us",
   "documentation": "https://github.com/l3pus-labs/cli",
   "license": "MIT",
-  "keywords": ["rakete", "handwerk", "erp", "dienstleistung"],
+  "keywords": [
+    "rakete",
+    "handwerk",
+    "erp",
+    "dienstleistung"
+  ],
+  "icon": "assets/icon-256.png",
+  "icons": [
+    {
+      "src": "assets/icon-128.png",
+      "size": "128x128"
+    },
+    {
+      "src": "assets/icon-256.png",
+      "size": "256x256"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "size": "512x512"
+    }
+  ],
   "server": {
     "type": "binary",
     "entry_point": "server/rakete",
     "mcp_config": {
       "command": "${__dirname}/server/rakete",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "env": {
         "RAKETE_SERVER": "${user_config.server}",
         "RAKETE_TOKEN": "${user_config.token}"
@@ -42,6 +64,10 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"]
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
   }
 }
