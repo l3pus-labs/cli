@@ -86,7 +86,7 @@ impl Rakete {
         description = "Die Bereiche dieses Rakete-Servers mit der Anzahl ihrer Befehle. Der Einstieg: erst hier nachsehen, welcher Bereich gemeint ist, dann rakete_operations oder rakete_search."
     )]
     fn rakete_groups(&self) -> String {
-        let liste: Vec<_> = self
+        let list: Vec<_> = self
             .catalog
             .groups
             .iter()
@@ -106,7 +106,7 @@ impl Rakete {
             .collect();
         pretty(&serde_json::json!({
             "server": self.server,
-            "groups": liste,
+            "groups": list,
         }))
     }
 
@@ -115,16 +115,16 @@ impl Rakete {
     )]
     fn rakete_search(&self, Parameters(SearchParams { term }): Parameters<SearchParams>) -> String {
         let needle = term.trim().to_lowercase();
-        let mut treffer = Vec::new();
+        let mut hits = Vec::new();
         for (group, operations) in &self.catalog.groups {
             for operation in operations.values() {
-                let heuhaufen = format!(
+                let haystack = format!(
                     "{} {} {} {}",
                     group, operation.name, operation.path, operation.summary
                 )
                 .to_lowercase();
-                if heuhaufen.contains(&needle) {
-                    treffer.push(serde_json::json!({
+                if haystack.contains(&needle) {
+                    hits.push(serde_json::json!({
                         "group": group,
                         "command": operation.name,
                         "summary": operation.summary,
@@ -137,12 +137,12 @@ impl Rakete {
         // Gekappt, damit eine zu weite Suche nicht den halben Katalog
         // zurückgibt. Wer dreißig Treffer hat, hat das falsche Wort
         // gesucht.
-        let gesamt = treffer.len();
-        treffer.truncate(30);
+        let total = hits.len();
+        hits.truncate(30);
         pretty(&serde_json::json!({
-            "found": gesamt,
-            "shown": treffer.len(),
-            "matches": treffer,
+            "found": total,
+            "shown": hits.len(),
+            "matches": hits,
         }))
     }
 
@@ -159,7 +159,7 @@ impl Rakete {
                 "groups": self.catalog.groups.keys().collect::<Vec<_>>(),
             }));
         };
-        let liste: Vec<_> = operations
+        let list: Vec<_> = operations
             .values()
             .map(|operation| {
                 serde_json::json!({
@@ -180,7 +180,7 @@ impl Rakete {
                 })
             })
             .collect();
-        pretty(&serde_json::json!({ "group": group, "commands": liste }))
+        pretty(&serde_json::json!({ "group": group, "commands": list }))
     }
 
     #[tool(
@@ -225,10 +225,10 @@ impl Rakete {
             })?
             .clone();
 
-        let werte = path.unwrap_or_default();
-        let mut pfad = operation.path.clone();
+        let values = path.unwrap_or_default();
+        let mut path = operation.path.clone();
         for param in &operation.path_params {
-            let wert = werte.get(&param.name).map(als_text).ok_or_else(|| {
+            let wert = values.get(&param.name).map(as_text).ok_or_else(|| {
                 l3pus_cli::Failure::usage(format!(
                     "Im Pfad fehlt {}. Erwartet werden: {}",
                     param.name,
@@ -240,13 +240,13 @@ impl Rakete {
                         .join(", ")
                 ))
             })?;
-            pfad = pfad.replace(&format!("{{{}}}", param.name), &wert);
+            path = path.replace(&format!("{{{}}}", param.name), &wert);
         }
 
-        let abfrage: Vec<(String, String)> = query
+        let query: Vec<(String, String)> = query
             .unwrap_or_default()
             .into_iter()
-            .map(|(name, wert)| (name, als_text(&wert)))
+            .map(|(name, wert)| (name, as_text(&wert)))
             .collect();
 
         // **Der Aufruf selbst blockiert, und das muss aus dem Faden.**
@@ -255,41 +255,42 @@ impl Rakete {
         // ganze Rest hier ist async, weil das SDK es ist.
         let server = self.server.clone();
         let token = self.token.clone();
-        let methode = operation.method.clone();
-        let antwort = tokio::task::spawn_blocking(move || {
+        let method = operation.method.clone();
+        let response = tokio::task::spawn_blocking(move || {
             let client = Client::new(&server, token)?;
-            client.call(&methode, &pfad, &abfrage, body.as_ref())
+            client.call(&method, &path, &query, body.as_ref())
         })
         .await
         .map_err(|error| {
             l3pus_cli::Failure::unreachable(format!("Aufruf abgebrochen: {error}"))
         })??;
 
-        match l3pus_cli::exit::from_status(antwort.status) {
+        match l3pus_cli::exit::from_status(response.status) {
             // **Bytes landen in einer Datei, nicht in der Antwort.** Ein
             // PDF als Text wäre ein halbes Megabyte Unrat im Kontext und
             // danach immer noch kein PDF. Der Pfad dagegen ist etwas, das
             // ein Mensch öffnen und ein Agent weiterreichen kann, und
             // damit kann dieser Weg alles, was die Kommandozeile kann.
-            Code::Ok if !antwort.is_json() => {
-                let pfad = ablegen(&antwort.bytes, &antwort.content_type, &group, &command)?;
+            Code::Ok if !response.is_json() => {
+                let path =
+                    write_to_file(&response.bytes, &response.content_type, &group, &command)?;
                 Ok(pretty(&serde_json::json!({
                     "ok": true,
-                    "status": antwort.status,
-                    "content_type": antwort.content_type,
-                    "bytes": antwort.bytes.len(),
-                    "file": pfad,
+                    "status": response.status,
+                    "content_type": response.content_type,
+                    "bytes": response.bytes.len(),
+                    "file": path,
                     "note": "Die Antwort ist kein Text und liegt als Datei. Der Pfad oben zeigt darauf.",
                 })))
             }
             Code::Ok => Ok(pretty(&serde_json::json!({
                 "ok": true,
-                "status": antwort.status,
-                "result": antwort.body,
+                "status": response.status,
+                "result": response.body,
             }))),
             code => Err(l3pus_cli::Failure {
                 code,
-                message: l3pus_cli::api::complain(antwort.status, &antwort.body),
+                message: l3pus_cli::api::complain(response.status, &response.body),
             }),
         }
     }
@@ -324,21 +325,21 @@ impl ServerHandler for Rakete {
 /// einzige Zeile Begleittext macht die Verbindung kaputt, ohne dass der
 /// Benutzer je erfährt, warum. Deshalb geht jeder Hinweis nach stderr.
 pub fn serve(catalog: Arc<Catalog>, server: String, token: Option<String>) -> Outcome<()> {
-    let laufzeit = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| {
             l3pus_cli::Failure::unreachable(format!("Keine Laufzeitumgebung: {error}"))
         })?;
 
-    laufzeit.block_on(async move {
-        let dienst = Rakete::new(catalog, server, token)
+    runtime.block_on(async move {
+        let service = Rakete::new(catalog, server, token)
             .serve(rmcp::transport::stdio())
             .await
             .map_err(|error| {
                 l3pus_cli::Failure::unreachable(format!("MCP kam nicht zustande: {error}"))
             })?;
-        dienst.waiting().await.map_err(|error| {
+        service.waiting().await.map_err(|error| {
             l3pus_cli::Failure::unreachable(format!("MCP abgebrochen: {error}"))
         })?;
         Ok(())
@@ -351,8 +352,8 @@ pub fn serve(catalog: Arc<Catalog>, server: String, token: Option<String>) -> Ou
 /// Werkzeug, das ungefragt Dateien neben den Quelltext legt, tut etwas,
 /// das niemand verlangt hat. Der Name trägt Bereich, Befehl und die Zeit,
 /// damit zwei Abrufe sich nicht überschreiben.
-fn ablegen(bytes: &[u8], content_type: &str, group: &str, command: &str) -> Outcome<String> {
-    let endung = match content_type.split(';').next().unwrap_or("").trim() {
+fn write_to_file(bytes: &[u8], content_type: &str, group: &str, command: &str) -> Outcome<String> {
+    let extension = match content_type.split(';').next().unwrap_or("").trim() {
         "application/pdf" => "pdf",
         "application/xml" | "text/xml" => "xml",
         "image/svg+xml" => "svg",
@@ -362,28 +363,28 @@ fn ablegen(bytes: &[u8], content_type: &str, group: &str, command: &str) -> Outc
         "application/zip" => "zip",
         _ => "bin",
     };
-    let stempel = std::time::SystemTime::now()
+    let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|dauer| dauer.as_millis())
         .unwrap_or(0);
-    let ordner = std::env::temp_dir().join("rakete");
-    std::fs::create_dir_all(&ordner).map_err(|error| {
+    let directory = std::env::temp_dir().join("rakete");
+    std::fs::create_dir_all(&directory).map_err(|error| {
         l3pus_cli::Failure::unreachable(format!(
             "{} ließ sich nicht anlegen: {error}",
-            ordner.display()
+            directory.display()
         ))
     })?;
-    let pfad = ordner.join(format!("{group}-{command}-{stempel}.{endung}"));
-    std::fs::write(&pfad, bytes)
-        .map_err(|error| l3pus_cli::Failure::unreachable(format!("{}: {error}", pfad.display())))?;
-    Ok(pfad.display().to_string())
+    let path = directory.join(format!("{group}-{command}-{stamp}.{extension}"));
+    std::fs::write(&path, bytes)
+        .map_err(|error| l3pus_cli::Failure::unreachable(format!("{}: {error}", path.display())))?;
+    Ok(path.display().to_string())
 }
 
 /// Ein Wert als Text, ohne Anführungszeichen um Zeichenketten.
 ///
 /// Ein Modell schreibt `{"id": 42}` genauso oft wie `{"id": "42"}`, und
 /// beides meint dieselbe Zeile in der Datenbank.
-fn als_text(wert: &serde_json::Value) -> String {
+fn as_text(wert: &serde_json::Value) -> String {
     match wert {
         serde_json::Value::String(text) => text.clone(),
         andere => andere.to_string(),
@@ -435,8 +436,8 @@ mod tests {
 
     #[test]
     fn the_overview_names_every_group_with_a_count() {
-        let antwort: serde_json::Value = serde_json::from_str(&server().rakete_groups()).unwrap();
-        let gruppen = antwort["groups"].as_array().unwrap();
+        let response: serde_json::Value = serde_json::from_str(&server().rakete_groups()).unwrap();
+        let gruppen = response["groups"].as_array().unwrap();
         assert_eq!(gruppen.len(), 2);
         let namen: Vec<_> = gruppen
             .iter()
@@ -450,33 +451,33 @@ mod tests {
     fn searching_finds_across_groups_and_in_german() {
         // Gesucht wird in der Beschreibung, und die ist deutsch. Ein
         // Modell, das "Plantafel" liest, soll danach suchen können.
-        let treffer: serde_json::Value =
+        let hits: serde_json::Value =
             serde_json::from_str(&server().rakete_search(Parameters(SearchParams {
                 term: "Plantafel".into(),
             })))
             .unwrap();
-        assert_eq!(treffer["found"], 1);
-        assert_eq!(treffer["matches"][0]["group"], "dispatch");
+        assert_eq!(hits["found"], 1);
+        assert_eq!(hits["matches"][0]["group"], "dispatch");
     }
 
     #[test]
     fn searching_is_case_insensitive() {
-        let treffer: serde_json::Value =
+        let hits: serde_json::Value =
             serde_json::from_str(&server().rakete_search(Parameters(SearchParams {
                 term: "KUNDEN".into(),
             })))
             .unwrap();
-        assert!(treffer["found"].as_u64().unwrap() >= 2, "{treffer}");
+        assert!(hits["found"].as_u64().unwrap() >= 2, "{hits}");
     }
 
     #[test]
     fn the_details_carry_what_a_call_needs() {
-        let antwort: serde_json::Value =
+        let response: serde_json::Value =
             serde_json::from_str(&server().rakete_operations(Parameters(GroupParams {
                 group: "customers".into(),
             })))
             .unwrap();
-        let befehle = antwort["commands"].as_array().unwrap();
+        let befehle = response["commands"].as_array().unwrap();
         let get = befehle.iter().find(|c| c["command"] == "get").unwrap();
         assert_eq!(get["path_values"][0], "id");
         let create = befehle.iter().find(|c| c["command"] == "create").unwrap();
@@ -486,19 +487,19 @@ mod tests {
     #[test]
     fn an_unknown_group_answers_with_the_ones_that_exist() {
         // Sonst rät ein Modell weiter statt nachzusehen.
-        let antwort: serde_json::Value =
+        let response: serde_json::Value =
             serde_json::from_str(&server().rakete_operations(Parameters(GroupParams {
                 group: "kunden".into(),
             })))
             .unwrap();
-        assert!(antwort["error"].is_string());
-        assert!(antwort["groups"].as_array().unwrap().len() == 2);
+        assert!(response["error"].is_string());
+        assert!(response["groups"].as_array().unwrap().len() == 2);
     }
 
     #[test]
     fn a_number_in_the_path_is_the_same_as_a_string() {
-        assert_eq!(als_text(&serde_json::json!(42)), "42");
-        assert_eq!(als_text(&serde_json::json!("42")), "42");
+        assert_eq!(as_text(&serde_json::json!(42)), "42");
+        assert_eq!(as_text(&serde_json::json!("42")), "42");
     }
 
     #[test]
