@@ -105,31 +105,23 @@ jobs:
       # daneben. Der Kunde lädt eine Datei, klickt einmal und tippt sein
       # Zeichen in ein maskiertes Feld.
       #
-      # Die Fassung im Manifest wird aus Cargo.toml gesetzt, damit sie
-      # nicht auseinanderlaufen kann.
+      # **Gebaut in Python und nicht in der Shell.** Der erste Lauf ist
+      # hier auf Windows an `zip: command not found` gescheitert: das
+      # Git-bash eines Windows-Läufers bringt kein zip mit. Python ist
+      # auf allen vier Läufern da und tut überall dasselbe.
       - name: Bundle für Claude Desktop
         shell: bash
         run: |
           FASSUNG=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           BUNDLE="rakete-${{ matrix.ziel }}.mcpb"
-          rm -rf bundle-bau && mkdir -p bundle-bau/server
-          # Ohne Hier-Dokument: ein eingerücktes Hier-Dokument in einem
-          # YAML-Block ist genau die Sorte Konstruktion, die auf einem
-          # Läufer anders bricht als auf dem eigenen Rechner.
-          python3 scripts/bundle-manifest.py "$FASSUNG" bundle-bau/manifest.json
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.ziel }}/release/rakete.exe" bundle-bau/server/
+            BINAER="target/${{ matrix.ziel }}/release/rakete.exe"
           else
-            cp "target/${{ matrix.ziel }}/release/rakete" bundle-bau/server/
+            BINAER="target/${{ matrix.ziel }}/release/rakete"
           fi
-          cp plugins/rakete/README.md bundle-bau/
-          cp LICENSE bundle-bau/
-          # Zip und nicht tar: das Format ist ein Zip, und Claude
-          # Desktop packt es selbst aus.
-          (cd bundle-bau && zip -q -r "../$BUNDLE" .)
+          python3 scripts/bundle.py "$FASSUNG" "$BINAER" "$BUNDLE"
           shasum -a 256 "$BUNDLE" > "$BUNDLE.sha256" 2>/dev/null \
             || sha256sum "$BUNDLE" > "$BUNDLE.sha256"
-          echo "$BUNDLE: $(wc -c < "$BUNDLE") Bytes"
 
       - uses: softprops/action-gh-release@v2
         with:
