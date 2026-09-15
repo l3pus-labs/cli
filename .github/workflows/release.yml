@@ -18,28 +18,67 @@ on:
       fassung:
         description: "Fassung, etwa 0.2.0"
         required: true
+      # **Damit ein einzelner Fehlschlag nicht vier Bauten kostet.**
+      # Genau der Fall am 15.09.2026: drei Plattformen hatten
+      # veröffentlicht, Windows war an einem fehlenden `zip`
+      # gescheitert, und ohne diese Eingabe hätte man alle vier noch
+      # einmal bezahlt, um eine Datei nachzuliefern.
+      nur:
+        description: "Nur diese eine Plattform"
+        required: false
+        type: choice
+        default: "alle"
+        options:
+          - "alle"
+          - "macOS (Apple Silicon)"
+          - "macOS (Intel)"
+          - "Linux"
+          - "Windows"
 
 permissions:
   contents: write
 
 jobs:
+  # Welche Plattformen gebaut werden, entscheidet ein eigener Auftrag.
+  #
+  # Ein `if` am Bauauftrag ginge nicht: dort kennt GitHub `github`,
+  # `needs`, `vars` und `inputs`, aber **nicht** `matrix`, und sagt das
+  # erst beim Anstoßen. Ein Auftrag, der gar nicht erst entsteht, kostet
+  # nichts; macOS-Läufer werden zehnfach abgerechnet.
+  auswahl:
+    runs-on: ubuntu-latest
+    outputs:
+      plattformen: ${{ steps.filtern.outputs.plattformen }}
+    steps:
+      - id: filtern
+        shell: bash
+        env:
+          NUR: ${{ github.event.inputs.nur }}
+        run: |
+          ALLE='[
+            {"os":"macos-latest","ziel":"aarch64-apple-darwin","name":"macOS (Apple Silicon)"},
+            {"os":"macos-latest","ziel":"x86_64-apple-darwin","name":"macOS (Intel)"},
+            {"os":"ubuntu-latest","ziel":"x86_64-unknown-linux-gnu","name":"Linux"},
+            {"os":"windows-latest","ziel":"x86_64-pc-windows-msvc","name":"Windows"}
+          ]'
+          if [ -z "${NUR:-}" ] || [ "$NUR" = "alle" ]; then
+            AUSWAHL="$(echo "$ALLE" | jq -c .)"
+          else
+            AUSWAHL="$(echo "$ALLE" | jq -c --arg n "$NUR" '[.[] | select(.name == $n)]')"
+            if [ "$(echo "$AUSWAHL" | jq length)" = "0" ]; then
+              echo "»$NUR« ist keine der vier Plattformen." >&2
+              exit 1
+            fi
+          fi
+          echo "plattformen=$AUSWAHL" >> "$GITHUB_OUTPUT"
+          echo "Gebaut wird: $(echo "$AUSWAHL" | jq -r '[.[].name] | join(", ")')"
+
   bauen:
+    needs: auswahl
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            ziel: aarch64-apple-darwin
-            name: macOS (Apple Silicon)
-          - os: macos-latest
-            ziel: x86_64-apple-darwin
-            name: macOS (Intel)
-          - os: ubuntu-latest
-            ziel: x86_64-unknown-linux-gnu
-            name: Linux
-          - os: windows-latest
-            ziel: x86_64-pc-windows-msvc
-            name: Windows
+        include: ${{ fromJSON(needs.auswahl.outputs.plattformen) }}
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
