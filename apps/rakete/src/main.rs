@@ -11,6 +11,7 @@
 //! kann dieses Werkzeug alles, was sein Server kann, und zwar genau der
 //! Server, mit dem gerade gesprochen wird.
 
+mod mcp;
 mod spec;
 mod tree;
 
@@ -145,6 +146,11 @@ fn run(arguments: &[String], server: Option<String>, format: Format) -> Outcome<
         "describe" => describe(catalog.as_ref(), format),
         "completions" => completions(catalog.as_ref(), sub),
         "man" => manual(catalog.as_ref()),
+        "mcp" => mcp::serve(
+            std::sync::Arc::new(catalog.ok_or_else(no_server)?),
+            server.clone().ok_or_else(no_server)?,
+            secrets::read(TOOL, &server.ok_or_else(no_server)?, TOKEN_VAR),
+        ),
         group => dispatch(
             catalog.as_ref().ok_or_else(no_server)?,
             server.ok_or_else(no_server)?,

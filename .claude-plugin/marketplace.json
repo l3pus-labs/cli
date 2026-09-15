@@ -1,0 +1,18 @@
+{
+  "name": "l3pus",
+  "owner": {
+    "name": "l3pus",
+    "email": "dennis.ollhoff@l3pus.de",
+    "url": "https://l3pus.de"
+  },
+  "metadata": {
+    "description": "Die Werkzeuge von l3pus für Claude Code und Claude Desktop."
+  },
+  "plugins": [
+    {
+      "name": "rakete",
+      "source": "./plugins/rakete",
+      "description": "Kunden, Einsätze, Zeiten und Belege aus dem eigenen Rakete-Server."
+    }
+  ]
+}

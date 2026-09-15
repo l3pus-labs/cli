@@ -9,7 +9,7 @@ members = ["crates/l3pus-cli", "apps/rakete"]
 # drei Repositories mit drei Fassungen derselben Anmeldung wären drei
 # Gelegenheiten, es unterschiedlich zu machen.
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
@@ -23,6 +23,14 @@ clap_complete = "4"
 clap_mangen = "0.2"
 directories = "6"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Das offizielle SDK zum Model Context Protocol
+# (github.com/modelcontextprotocol/rust-sdk). Kein Eigenbau des
+# Protokolls: die Fassungsaushandlung und die Schemaerzeugung sind
+# genau die Stellen, an denen ein selbstgeschriebener Server still
+# nicht funktioniert, und zwar in der Desktop-App eines Kunden.
+rmcp = { version = "3.3", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 rpassword = "7"
 terminal_size = "0.4"

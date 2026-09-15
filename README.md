@@ -194,12 +194,44 @@ dass man es erst merkt, wenn es zu spät ist. Ohne Umleitung und ohne
 
 ---
 
+## In Claude Desktop und Claude Code
+
+Dasselbe Binär spricht auch das Model Context Protocol, damit Claude
+Rakete bedienen kann. `rakete mcp` ist der Server; von Hand ruft man das
+nicht auf.
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add l3pus-labs/cli
+/plugin install rakete@l3pus
+```
+
+**Claude Desktop:** die `.mcpb`-Datei der eigenen Plattform aus der
+Veröffentlichung laden und öffnen. Ein Klick, dann Adresse und Zeichen in
+ein Formular, fertig.
+
+**Vier Werkzeuge, nicht dreihundert.** `rakete_groups` für den Überblick,
+`rakete_search` zum Finden, `rakete_operations` für die Einzelheiten
+eines Bereichs, `rakete_call` zum Ausführen. Hunderte Werkzeuge
+nebeneinander füllen den Kontext und verschlechtern die Auswahl; ein
+Modell, das erst sucht und dann aufruft, trifft besser. **Erreichbar ist
+trotzdem alles**, denn `rakete_call` führt jeden Vorgang des Servers aus.
+
+Wer sich mit `rakete login` angemeldet hat, braucht keine
+Umgebungsvariablen: der MCP-Server nimmt Adresse und Zeichen aus dem
+Schlüsselbund.
+
+---
+
 ## Woraus es besteht
 
 | Ordner | Was |
 |---|---|
-| `apps/rakete` | das Binär `rakete` |
+| `apps/rakete` | das Binär `rakete`, Kommandozeile und MCP-Server |
 | `crates/l3pus-cli` | der gemeinsame Unterbau: Anmeldung, Ausgabe, Rückgabewerte |
+| `plugins/rakete` | das Plugin für Claude Code |
+| `bundle` | die Beschreibung für das `.mcpb` von Claude Desktop |
 
 Ein Arbeitsbereich und nicht ein Repository je Werkzeug: Anmeldung,
 Konfiguration, Ausgabeform und Rückgabewerte sind für alle dieselben, und

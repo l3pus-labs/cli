@@ -1,0 +1,513 @@
+//! Derselbe Zugang für Claude Desktop und Claude Code (ADR-034).
+//!
+//! **Vier Werkzeuge und nicht zweihundertachtundneunzig.** Das ist die
+//! eine Entscheidung, auf die es hier ankommt. Jede Anleitung zu großen
+//! Schnittstellen warnt vor demselben: hunderte Werkzeugbeschreibungen
+//! fressen den Kontext, und je mehr davon nebeneinanderstehen, desto
+//! schlechter wird die Auswahl. Ein Modell, das aus dreihundert fast
+//! gleich klingenden Namen wählen muss, wählt schlechter als eines, das
+//! erst sucht und dann aufruft.
+//!
+//! Also: `groups` für den Überblick, `search` zum Finden, `operations`
+//! für die Einzelheiten einer Gruppe, `call` zum Ausführen. Die ersten
+//! drei kosten zusammen weniger Kontext als zehn echte Werkzeuge, und
+//! sie reichen, um den vierten richtig zu benutzen.
+//!
+//! **Die Werkzeuge stehen fest, die Befehle nicht.** Was `call`
+//! ausführen kann, kommt aus der Beschreibung des Servers, genau wie bei
+//! der Kommandozeile. Ein neuer Endpunkt in Rakete ist hier sofort da,
+//! ohne dass jemand dieses Programm anfasst.
+
+use std::sync::Arc;
+
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use serde::Deserialize;
+
+use l3pus_cli::api::Client;
+use l3pus_cli::exit::{Code, Outcome};
+
+use crate::spec::Catalog;
+
+#[derive(Clone)]
+pub struct Rakete {
+    catalog: Arc<Catalog>,
+    server: String,
+    token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GroupParams {
+    /// Der Name der Gruppe, etwa `customers` oder `dispatch`.
+    pub group: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchParams {
+    /// Ein Wort, nach dem gesucht wird. Gesucht wird im Namen des
+    /// Befehls, im Pfad und in der Beschreibung, deutsch wie englisch.
+    pub term: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CallParams {
+    /// Die Gruppe, etwa `customers`.
+    pub group: String,
+    /// Der Befehl innerhalb der Gruppe, etwa `list` oder `get`.
+    pub command: String,
+    /// Werte für die Platzhalter im Pfad, nach Namen. Für
+    /// `/api/customers/{id}` also `{"id": "42"}`.
+    #[serde(default)]
+    pub path: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Werte, die hinten an die Adresse gehängt werden, nach Namen.
+    #[serde(default)]
+    pub query: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Der Rumpf, für alles Schreibende. Welche Felder nötig sind, sagt
+    /// `rakete_operations`.
+    #[serde(default)]
+    pub body: Option<serde_json::Value>,
+}
+
+#[tool_router]
+impl Rakete {
+    pub fn new(catalog: Arc<Catalog>, server: String, token: Option<String>) -> Self {
+        // Der Router wird vom Makro bei Bedarf gebaut und nicht hier
+        // gehalten: eine Kopie davon im Zustand wäre eine zweite
+        // Wahrheit über dieselben vier Werkzeuge.
+        Self {
+            catalog,
+            server,
+            token,
+        }
+    }
+
+    #[tool(
+        description = "Die Bereiche dieses Rakete-Servers mit der Anzahl ihrer Befehle. Der Einstieg: erst hier nachsehen, welcher Bereich gemeint ist, dann rakete_operations oder rakete_search."
+    )]
+    fn rakete_groups(&self) -> String {
+        let liste: Vec<_> = self
+            .catalog
+            .groups
+            .iter()
+            .map(|(name, operations)| {
+                serde_json::json!({
+                    "group": name,
+                    "commands": operations.len(),
+                    // Ein paar Beispiele statt einer nackten Zahl: daran
+                    // erkennt man den Bereich, ohne ihn erst zu öffnen.
+                    "examples": operations
+                        .values()
+                        .take(3)
+                        .map(|operation| operation.name.clone())
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        pretty(&serde_json::json!({
+            "server": self.server,
+            "groups": liste,
+        }))
+    }
+
+    #[tool(
+        description = "Sucht Befehle über alle Bereiche hinweg, nach einem Wort im Namen, im Pfad oder in der Beschreibung. Der schnellste Weg, wenn klar ist, was gebraucht wird, aber nicht, wo es steht."
+    )]
+    fn rakete_search(&self, Parameters(SearchParams { term }): Parameters<SearchParams>) -> String {
+        let needle = term.trim().to_lowercase();
+        let mut treffer = Vec::new();
+        for (group, operations) in &self.catalog.groups {
+            for operation in operations.values() {
+                let heuhaufen = format!(
+                    "{} {} {} {}",
+                    group, operation.name, operation.path, operation.summary
+                )
+                .to_lowercase();
+                if heuhaufen.contains(&needle) {
+                    treffer.push(serde_json::json!({
+                        "group": group,
+                        "command": operation.name,
+                        "summary": operation.summary,
+                        "method": operation.method,
+                        "path": operation.path,
+                    }));
+                }
+            }
+        }
+        // Gekappt, damit eine zu weite Suche nicht den halben Katalog
+        // zurückgibt. Wer dreißig Treffer hat, hat das falsche Wort
+        // gesucht.
+        let gesamt = treffer.len();
+        treffer.truncate(30);
+        pretty(&serde_json::json!({
+            "found": gesamt,
+            "shown": treffer.len(),
+            "matches": treffer,
+        }))
+    }
+
+    #[tool(
+        description = "Alle Befehle eines Bereichs, mit ihren Pfadwerten, Abfragewerten und den Feldern, die ein Rumpf mindestens braucht. Das ist die Vorlage für rakete_call."
+    )]
+    fn rakete_operations(
+        &self,
+        Parameters(GroupParams { group }): Parameters<GroupParams>,
+    ) -> String {
+        let Some(operations) = self.catalog.groups.get(&group) else {
+            return pretty(&serde_json::json!({
+                "error": format!("Den Bereich {group} gibt es auf diesem Server nicht."),
+                "groups": self.catalog.groups.keys().collect::<Vec<_>>(),
+            }));
+        };
+        let liste: Vec<_> = operations
+            .values()
+            .map(|operation| {
+                serde_json::json!({
+                    "command": operation.name,
+                    "summary": operation.summary,
+                    "method": operation.method,
+                    "path": operation.path,
+                    "path_values": operation.path_params.iter()
+                        .map(|param| param.name.clone()).collect::<Vec<_>>(),
+                    "query_values": operation.query_params.iter()
+                        .map(|param| serde_json::json!({
+                            "name": param.name,
+                            "required": param.required,
+                        })).collect::<Vec<_>>(),
+                    "body": operation.has_body.then(|| serde_json::json!({
+                        "required_fields": operation.required_fields,
+                    })),
+                })
+            })
+            .collect();
+        pretty(&serde_json::json!({ "group": group, "commands": liste }))
+    }
+
+    #[tool(
+        description = "Führt einen Befehl aus und gibt die Antwort des Servers zurück. Lesende Befehle sind unbedenklich; alles Schreibende ändert echte Daten in einem Betrieb, also vorher fragen. Ob das Zeichen überhaupt schreiben darf, sagt der Server selbst."
+    )]
+    async fn rakete_call(&self, Parameters(params): Parameters<CallParams>) -> String {
+        match self.perform(params).await {
+            Ok(text) => text,
+            Err(failure) => pretty(&serde_json::json!({
+                "ok": false,
+                "reason": failure.message,
+                // Die Trennung, die auf der Kommandozeile die
+                // Rückgabewerte machen, steht hier als Wort: sonst hält
+                // ein Modell "nicht erreichbar" für "gibt es nicht" und
+                // erzählt es dem Menschen so weiter.
+                "kind": match failure.code {
+                    Code::Wrong => "die Sache stimmt nicht, noch einmal ändert nichts",
+                    Code::Usage => "der Aufruf war falsch zusammengesetzt",
+                    Code::Unreachable => "wir konnten nicht nachsehen, die Frage ist offen",
+                    Code::Ok => "in Ordnung",
+                },
+            })),
+        }
+    }
+
+    async fn perform(&self, params: CallParams) -> Outcome<String> {
+        let CallParams {
+            group,
+            command,
+            path,
+            query,
+            body,
+        } = params;
+
+        let operation = self
+            .catalog
+            .find(&group, &command)
+            .ok_or_else(|| {
+                l3pus_cli::Failure::usage(format!(
+                    "{group} {command} kennt dieser Server nicht. rakete_operations zeigt, was es gibt."
+                ))
+            })?
+            .clone();
+
+        let werte = path.unwrap_or_default();
+        let mut pfad = operation.path.clone();
+        for param in &operation.path_params {
+            let wert = werte.get(&param.name).map(als_text).ok_or_else(|| {
+                l3pus_cli::Failure::usage(format!(
+                    "Im Pfad fehlt {}. Erwartet werden: {}",
+                    param.name,
+                    operation
+                        .path_params
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            pfad = pfad.replace(&format!("{{{}}}", param.name), &wert);
+        }
+
+        let abfrage: Vec<(String, String)> = query
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, wert)| (name, als_text(&wert)))
+            .collect();
+
+        // **Der Aufruf selbst blockiert, und das muss aus dem Faden.**
+        // reqwest::blocking legt sich eine eigene Laufzeit an und
+        // bricht ab, wenn es aus einem Tokio-Arbeiter gerufen wird. Der
+        // ganze Rest hier ist async, weil das SDK es ist.
+        let server = self.server.clone();
+        let token = self.token.clone();
+        let methode = operation.method.clone();
+        let antwort = tokio::task::spawn_blocking(move || {
+            let client = Client::new(&server, token)?;
+            client.call(&methode, &pfad, &abfrage, body.as_ref())
+        })
+        .await
+        .map_err(|error| {
+            l3pus_cli::Failure::unreachable(format!("Aufruf abgebrochen: {error}"))
+        })??;
+
+        match l3pus_cli::exit::from_status(antwort.status) {
+            // **Bytes landen in einer Datei, nicht in der Antwort.** Ein
+            // PDF als Text wäre ein halbes Megabyte Unrat im Kontext und
+            // danach immer noch kein PDF. Der Pfad dagegen ist etwas, das
+            // ein Mensch öffnen und ein Agent weiterreichen kann, und
+            // damit kann dieser Weg alles, was die Kommandozeile kann.
+            Code::Ok if !antwort.is_json() => {
+                let pfad = ablegen(&antwort.bytes, &antwort.content_type, &group, &command)?;
+                Ok(pretty(&serde_json::json!({
+                    "ok": true,
+                    "status": antwort.status,
+                    "content_type": antwort.content_type,
+                    "bytes": antwort.bytes.len(),
+                    "file": pfad,
+                    "note": "Die Antwort ist kein Text und liegt als Datei. Der Pfad oben zeigt darauf.",
+                })))
+            }
+            Code::Ok => Ok(pretty(&serde_json::json!({
+                "ok": true,
+                "status": antwort.status,
+                "result": antwort.body,
+            }))),
+            code => Err(l3pus_cli::Failure {
+                code,
+                message: l3pus_cli::api::complain(antwort.status, &antwort.body),
+            }),
+        }
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for Rakete {
+    fn get_info(&self) -> ServerInfo {
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some(format!(
+            "Rakete ist das Betriebssystem eines Handwerks- oder Dienstleistungsbetriebs: \
+                 Kunden, Tickets, Plantafel, Zeiten, Belege, Verträge, Lager, Außendienst.\n\n\
+                 Dieser Server spricht mit {}. Er hat {} Befehle in {} Bereichen, und sie kommen \
+                 aus der Beschreibung dieses Servers, nicht aus einer Liste hier.\n\n\
+                 Vorgehen: rakete_groups für den Überblick, rakete_search wenn klar ist, was \
+                 gebraucht wird, rakete_operations für die Einzelheiten eines Bereichs, \
+                 rakete_call zum Ausführen.\n\n\
+                 Lesen ist unbedenklich. Alles Schreibende ändert echte Daten in einem laufenden \
+                 Betrieb: eine Rechnung, ein Einsatz, eine Arbeitszeit. Vorher fragen.",
+            self.server,
+            self.catalog.count(),
+            self.catalog.groups.len()
+        ));
+        info
+    }
+}
+
+/// Startet den Server auf stdin und stdout.
+///
+/// **Nichts darf sonst nach stdout.** Dort läuft das Protokoll, und eine
+/// einzige Zeile Begleittext macht die Verbindung kaputt, ohne dass der
+/// Benutzer je erfährt, warum. Deshalb geht jeder Hinweis nach stderr.
+pub fn serve(catalog: Arc<Catalog>, server: String, token: Option<String>) -> Outcome<()> {
+    let laufzeit = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            l3pus_cli::Failure::unreachable(format!("Keine Laufzeitumgebung: {error}"))
+        })?;
+
+    laufzeit.block_on(async move {
+        let dienst = Rakete::new(catalog, server, token)
+            .serve(rmcp::transport::stdio())
+            .await
+            .map_err(|error| {
+                l3pus_cli::Failure::unreachable(format!("MCP kam nicht zustande: {error}"))
+            })?;
+        dienst.waiting().await.map_err(|error| {
+            l3pus_cli::Failure::unreachable(format!("MCP abgebrochen: {error}"))
+        })?;
+        Ok(())
+    })
+}
+
+/// Eine Antwort, die kein Text ist, in eine Datei legen.
+///
+/// **Im Ordner für Flüchtiges und nicht im Arbeitsverzeichnis.** Ein
+/// Werkzeug, das ungefragt Dateien neben den Quelltext legt, tut etwas,
+/// das niemand verlangt hat. Der Name trägt Bereich, Befehl und die Zeit,
+/// damit zwei Abrufe sich nicht überschreiben.
+fn ablegen(bytes: &[u8], content_type: &str, group: &str, command: &str) -> Outcome<String> {
+    let endung = match content_type.split(';').next().unwrap_or("").trim() {
+        "application/pdf" => "pdf",
+        "application/xml" | "text/xml" => "xml",
+        "image/svg+xml" => "svg",
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "text/csv" => "csv",
+        "application/zip" => "zip",
+        _ => "bin",
+    };
+    let stempel = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dauer| dauer.as_millis())
+        .unwrap_or(0);
+    let ordner = std::env::temp_dir().join("rakete");
+    std::fs::create_dir_all(&ordner).map_err(|error| {
+        l3pus_cli::Failure::unreachable(format!(
+            "{} ließ sich nicht anlegen: {error}",
+            ordner.display()
+        ))
+    })?;
+    let pfad = ordner.join(format!("{group}-{command}-{stempel}.{endung}"));
+    std::fs::write(&pfad, bytes)
+        .map_err(|error| l3pus_cli::Failure::unreachable(format!("{}: {error}", pfad.display())))?;
+    Ok(pfad.display().to_string())
+}
+
+/// Ein Wert als Text, ohne Anführungszeichen um Zeichenketten.
+///
+/// Ein Modell schreibt `{"id": 42}` genauso oft wie `{"id": "42"}`, und
+/// beides meint dieselbe Zeile in der Datenbank.
+fn als_text(wert: &serde_json::Value) -> String {
+    match wert {
+        serde_json::Value::String(text) => text.clone(),
+        andere => andere.to_string(),
+    }
+}
+
+fn pretty(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// Damit `ErrorData` nicht ungenutzt gemeldet wird, falls das SDK seine
+/// Signaturen ändert: der Typ gehört zur Schnittstelle, die wir bedienen.
+#[allow(dead_code)]
+type UnusedErrorData = ErrorData;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec;
+
+    fn katalog() -> Arc<Catalog> {
+        let document = serde_json::json!({
+            "paths": {
+                "/api/customers/{id}": {
+                    "get": {"tags": ["http::customers"], "operationId": "get_customer",
+                            "summary": "Ein einzelner Kunde",
+                            "parameters": [{"name": "id", "in": "path", "required": true}]}
+                },
+                "/api/customers": {
+                    "get": {"tags": ["http::customers"], "operationId": "list_customers",
+                            "summary": "Die Kunden dieses Betriebs"},
+                    "post": {"tags": ["http::customers"], "operationId": "create_customer",
+                             "summary": "Einen Kunden anlegen",
+                             "requestBody": {"content": {"application/json":
+                                 {"schema": {"required": ["type", "last_name"]}}}}}
+                },
+                "/api/dispatch/board": {
+                    "get": {"tags": ["http::dispatch"], "operationId": "get_board",
+                            "summary": "Die Plantafel für einen Zeitraum"}
+                }
+            }
+        });
+        Arc::new(spec::parse(&document).unwrap())
+    }
+
+    fn server() -> Rakete {
+        Rakete::new(katalog(), "http://127.0.0.1:3000".into(), None)
+    }
+
+    #[test]
+    fn the_overview_names_every_group_with_a_count() {
+        let antwort: serde_json::Value = serde_json::from_str(&server().rakete_groups()).unwrap();
+        let gruppen = antwort["groups"].as_array().unwrap();
+        assert_eq!(gruppen.len(), 2);
+        let namen: Vec<_> = gruppen
+            .iter()
+            .map(|g| g["group"].as_str().unwrap())
+            .collect();
+        assert!(namen.contains(&"customers"), "{namen:?}");
+        assert!(namen.contains(&"dispatch"), "{namen:?}");
+    }
+
+    #[test]
+    fn searching_finds_across_groups_and_in_german() {
+        // Gesucht wird in der Beschreibung, und die ist deutsch. Ein
+        // Modell, das "Plantafel" liest, soll danach suchen können.
+        let treffer: serde_json::Value =
+            serde_json::from_str(&server().rakete_search(Parameters(SearchParams {
+                term: "Plantafel".into(),
+            })))
+            .unwrap();
+        assert_eq!(treffer["found"], 1);
+        assert_eq!(treffer["matches"][0]["group"], "dispatch");
+    }
+
+    #[test]
+    fn searching_is_case_insensitive() {
+        let treffer: serde_json::Value =
+            serde_json::from_str(&server().rakete_search(Parameters(SearchParams {
+                term: "KUNDEN".into(),
+            })))
+            .unwrap();
+        assert!(treffer["found"].as_u64().unwrap() >= 2, "{treffer}");
+    }
+
+    #[test]
+    fn the_details_carry_what_a_call_needs() {
+        let antwort: serde_json::Value =
+            serde_json::from_str(&server().rakete_operations(Parameters(GroupParams {
+                group: "customers".into(),
+            })))
+            .unwrap();
+        let befehle = antwort["commands"].as_array().unwrap();
+        let get = befehle.iter().find(|c| c["command"] == "get").unwrap();
+        assert_eq!(get["path_values"][0], "id");
+        let create = befehle.iter().find(|c| c["command"] == "create").unwrap();
+        assert_eq!(create["body"]["required_fields"][0], "type");
+    }
+
+    #[test]
+    fn an_unknown_group_answers_with_the_ones_that_exist() {
+        // Sonst rät ein Modell weiter statt nachzusehen.
+        let antwort: serde_json::Value =
+            serde_json::from_str(&server().rakete_operations(Parameters(GroupParams {
+                group: "kunden".into(),
+            })))
+            .unwrap();
+        assert!(antwort["error"].is_string());
+        assert!(antwort["groups"].as_array().unwrap().len() == 2);
+    }
+
+    #[test]
+    fn a_number_in_the_path_is_the_same_as_a_string() {
+        assert_eq!(als_text(&serde_json::json!(42)), "42");
+        assert_eq!(als_text(&serde_json::json!("42")), "42");
+    }
+
+    #[test]
+    fn the_instructions_say_that_writing_touches_a_real_business() {
+        // Der eine Satz, der verhindert, dass ein Modell munter eine
+        // Rechnung abschließt, weil es gerade danach gefragt wurde.
+        let info = server().get_info();
+        let text = info.instructions.unwrap();
+        assert!(text.contains("Vorher fragen"), "{text}");
+        assert!(text.contains("echte Daten"), "{text}");
+    }
+}

@@ -112,6 +112,19 @@ fn builtins() -> Vec<Command> {
                     .help("bash, zsh, fish, powershell, elvish"),
             ),
         Command::new("man").about("Die Handbuchseite, nach stdout"),
+        // **Für Claude Desktop und Claude Code.** Kein zweites Werkzeug,
+        // sondern dasselbe Binär, das statt einer Zeile ein Protokoll
+        // spricht. Wer es von Hand aufruft, sieht nichts passieren: es
+        // wartet auf stdin.
+        Command::new("mcp")
+            .about("Als MCP-Server auf stdin und stdout sprechen")
+            .long_about(
+                "Spricht das Model Context Protocol, damit Claude Desktop und\n\
+                 Claude Code Rakete bedienen können. Nicht von Hand aufrufen:\n\
+                 das Programm wartet dann auf ein Protokoll, das niemand spricht.\n\n\
+                 Vier Werkzeuge, hinter denen alle Befehle dieses Servers stehen:\n\
+                 rakete_groups, rakete_search, rakete_operations, rakete_call.",
+            ),
     ]
 }
 

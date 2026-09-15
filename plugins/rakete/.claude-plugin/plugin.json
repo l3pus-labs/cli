@@ -1,0 +1,16 @@
+{
+  "name": "rakete",
+  "displayName": "Rakete",
+  "description": "Kunden, Einsätze, Zeiten und Belege aus dem eigenen Rakete-Server. Alle Befehle des Servers hinter vier Werkzeugen.",
+  "version": "0.1.2",
+  "author": {
+    "name": "l3pus",
+    "email": "dennis.ollhoff@l3pus.de",
+    "url": "https://l3pus.de"
+  },
+  "homepage": "https://rakete.l3p.us",
+  "repository": "https://github.com/l3pus-labs/cli",
+  "license": "MIT",
+  "keywords": ["rakete", "handwerk", "erp", "dienstleistung", "deutsch"],
+  "mcpServers": "./.mcp.json"
+}
