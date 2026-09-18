@@ -396,10 +396,19 @@ fn dispatch(
         }
     }
 
-    let body = body_from(operation, sub)?;
     let token = secrets::read(TOOL, &server, TOKEN_VAR);
     let client = Client::new(&server, token)?;
-    let response = client.call(&operation.method, &path, &query, body.as_ref())?;
+    let response = if operation.wants_file {
+        let pfad = sub
+            .get_one::<String>("file")
+            .ok_or_else(|| Failure::usage("Dieser Vorgang braucht --datei"))?;
+        let bytes = std::fs::read(pfad)
+            .map_err(|error| Failure::usage(format!("{pfad}: {error}")))?;
+        client.call_with_file(&operation.method, &path, &query, bytes)?
+    } else {
+        let body = body_from(operation, sub)?;
+        client.call(&operation.method, &path, &query, body.as_ref())?
+    };
 
     let ziel = sub
         .get_one::<String>("output")

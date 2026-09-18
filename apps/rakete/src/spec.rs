@@ -31,6 +31,13 @@ pub struct Operation {
     pub query_params: Vec<Param>,
     /// Ob der Vorgang einen Rumpf erwartet.
     pub has_body: bool,
+    /// Ob der Rumpf rohe Bytes sind statt JSON.
+    ///
+    /// **Das Hochladen eines Papiers ist der Fall** (ADR-038): dort geht
+    /// eine Datei hinaus, kein Feldsatz. Ohne diese Unterscheidung böte
+    /// die Kommandozeile den Befehl an und könnte ihn nicht ausführen,
+    /// und das ist schlimmer, als ihn nicht anzubieten.
+    pub wants_file: bool,
     /// Welche Felder der Rumpf mindestens braucht. Steht in der
     /// Fehlermeldung, damit niemand die Beschreibung lesen muss.
     pub required_fields: Vec<String>,
@@ -104,6 +111,7 @@ pub fn parse(document: &serde_json::Value) -> Outcome<Catalog> {
                 path_params: params_of(operation, "path"),
                 query_params: params_of(operation, "query"),
                 has_body: operation.get("requestBody").is_some(),
+                wants_file: wants_file(operation),
                 required_fields: required_fields(document, operation),
             });
         }
@@ -223,6 +231,22 @@ fn params_of(operation: &serde_json::Value, place: &str) -> Vec<Param> {
 /// Ein Verweis tief in `components` muss dafür aufgelöst werden. Mehr
 /// als eine Ebene wird nicht verfolgt: was dann noch fehlt, sagt der
 /// Server selbst, und zwar genauer als jede Ableitung hier.
+/// Ob dieser Vorgang eine Datei will.
+///
+/// Erkannt an der Sorte des Rumpfes: alles, was nicht JSON ist, geht
+/// byteweise hinaus. Der Server sagt es selbst in seiner Beschreibung,
+/// also wird es gelesen und nicht geraten.
+fn wants_file(operation: &serde_json::Value) -> bool {
+    let Some(content) = operation
+        .get("requestBody")
+        .and_then(|body| body.get("content"))
+        .and_then(|content| content.as_object())
+    else {
+        return false;
+    };
+    !content.is_empty() && !content.contains_key("application/json")
+}
+
 fn required_fields(document: &serde_json::Value, operation: &serde_json::Value) -> Vec<String> {
     let schema = operation
         .get("requestBody")
@@ -350,5 +374,46 @@ mod tests {
         assert_eq!(catalog.count(), 2, "{:?}", catalog.groups);
         assert!(catalog.find("x", "get-do").is_some());
         assert!(catalog.find("x", "post-do").is_some());
+    }
+}
+
+#[cfg(test)]
+mod file_body_tests {
+    use super::*;
+
+    /// Ein Rumpf, der keine JSON-Sorte führt, will eine Datei.
+    ///
+    /// **Sonst böte die Kommandozeile einen Befehl an, den sie nicht
+    /// ausführen kann.** Genau das war bis zum 18.09.2026 der Fall: das
+    /// Hochladen eines Papiers stand im Baum, und `--data` hätte die
+    /// Bytes durch eine Zeichenkette gezwängt.
+    #[test]
+    fn an_octet_stream_body_asks_for_a_file() {
+        let document = serde_json::json!({
+            "paths": {
+                "/api/papers/upload": {
+                    "post": {"tags": ["http::papers"], "operationId": "upload",
+                             "requestBody": {"content": {"application/octet-stream": {}}}}
+                },
+                "/api/customers": {
+                    "post": {"tags": ["http::customers"], "operationId": "create",
+                             "requestBody": {"content": {"application/json": {}}}}
+                },
+                "/api/customers/{id}": {
+                    "get": {"tags": ["http::customers"], "operationId": "get",
+                            "parameters": [{"name": "id", "in": "path", "required": true}]}
+                }
+            }
+        });
+        let catalog = parse(&document).unwrap();
+        let von = |gruppe: &str, name: &str| {
+            catalog
+                .find(gruppe, name)
+                .unwrap_or_else(|| panic!("{gruppe} {name} fehlt"))
+        };
+        assert!(von("papers", "upload").wants_file);
+        assert!(!von("customers", "create").wants_file);
+        // Ohne Rumpf ist auch keine Datei gemeint.
+        assert!(!von("customers", "get").wants_file);
     }
 }

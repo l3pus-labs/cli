@@ -185,6 +185,19 @@ fn command_for(operation: &Operation) -> Command {
         );
     }
 
+    // **Eine Datei statt eines Feldsatzes.** Wo der Server Bytes will,
+    // hilft `--data` nicht weiter, und `--field` erst recht nicht: die
+    // Datei geht unverändert hinaus (ADR-038).
+    if operation.wants_file {
+        return command.arg(
+            Arg::new("file")
+                .long("datei")
+                .value_name("PFAD")
+                .required(true)
+                .help("Die Datei, die hochgeladen wird. PDF oder Word"),
+        );
+    }
+
     if operation.has_body {
         let hint = if operation.required_fields.is_empty() {
             "JSON für den Rumpf, oder @datei, oder @- für stdin".to_string()

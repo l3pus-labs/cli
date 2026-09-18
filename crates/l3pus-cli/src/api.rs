@@ -70,6 +70,33 @@ impl Client {
         query: &[(String, String)],
         body: Option<&serde_json::Value>,
     ) -> Outcome<Response> {
+        self.send(method, path, query, body, None)
+    }
+
+    /// Derselbe Aufruf, aber mit rohen Bytes im Rumpf.
+    ///
+    /// **Nicht jeder Rumpf ist JSON.** Ein hochgeladenes Papier ist eine
+    /// Datei (ADR-038), und sie durch eine Zeichenkette zu schicken
+    /// hieße, sie vorher zu verstümmeln. Getrennte Funktion und kein
+    /// zweiter Zweig im Aufrufer: die beiden schließen sich aus.
+    pub fn call_with_file(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        bytes: Vec<u8>,
+    ) -> Outcome<Response> {
+        self.send(method, path, query, None, Some(bytes))
+    }
+
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<&serde_json::Value>,
+        file: Option<Vec<u8>>,
+    ) -> Outcome<Response> {
         let url = format!("{}{}", self.server, path);
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| Failure::usage(format!("{method} ist keine Methode")))?;
@@ -82,6 +109,11 @@ impl Client {
         }
         if let Some(body) = body {
             request = request.json(body);
+        }
+        if let Some(bytes) = file {
+            request = request
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(bytes);
         }
 
         let response = request.send().map_err(|error| {
